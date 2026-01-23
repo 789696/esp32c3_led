@@ -66,9 +66,9 @@ BlinkerSlider SliderTime("set-time"); // 设置倒计时时长 (秒)
 BlinkerButton BtnStart("btn-start");  // 开始/停止倒计时按钮
 
 // 全局变量存储当前RGB值
-int currentR = 50;
-int currentG = 50;
-int currentB = 50;
+int currentR = 0;
+int currentG = 10;
+int currentB = 5;
 
 // 倒计时相关变量
 enum Mode {
