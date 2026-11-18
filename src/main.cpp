@@ -1,7 +1,7 @@
 #define BLINKER_BLE
 
 #include <Blinker.h>
-#include <Adafruit_NeoPixel.h>
+#include <FastLED.h>
 
 // ================= 配置区域 =================
 // 注意：蓝牙模式下不需要密钥和WiFi信息
@@ -14,7 +14,8 @@
 #define LED_COUNT (MATRIX_WIDTH * MATRIX_HEIGHT)
 
 // 整板亮度 (0-255)，越大越亮，注意供电电流
-#define LED_BRIGHTNESS 50
+// 设为 255 保留完整的 8 位灰度，低亮度颜色不会被截断
+#define LED_BRIGHTNESS 255
 
 // 灯板方向微调：如果实际显示上下/左右相反，把对应项改为 1
 #define MATRIX_FLIP_X 0
@@ -25,24 +26,38 @@
 // 第 0 行从左到右为 0~15，第 1 行从左到右为 16~31，以此类推。
 // 因此坐标 (x, y) 对应的灯珠序号为 y * 16 + x。
 
-// 5x7 数字字体 (0-9)，每行低 5 位有效
-const uint8_t DIGITS[10][7] = {
-    {0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E}, // 0
-    {0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E}, // 1
-    {0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1F}, // 2
-    {0x1F, 0x02, 0x04, 0x02, 0x01, 0x11, 0x0E}, // 3
-    {0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02}, // 4
-    {0x1F, 0x10, 0x1E, 0x01, 0x01, 0x11, 0x0E}, // 5
-    {0x06, 0x08, 0x10, 0x1E, 0x11, 0x11, 0x0E}, // 6
-    {0x1F, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08}, // 7
-    {0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E}, // 8
-    {0x0E, 0x11, 0x11, 0x0F, 0x01, 0x02, 0x0C}  // 9
+// 5x9 数字字体 (0-9)，用于放大的分钟显示，每行低 5 位有效
+const uint8_t DIGITS_LARGE[10][9] = {
+    {0x0E, 0x11, 0x11, 0x13, 0x15, 0x19, 0x11, 0x11, 0x0E}, // 0
+    {0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E}, // 1
+    {0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x10, 0x10, 0x1F}, // 2
+    {0x1F, 0x01, 0x02, 0x04, 0x02, 0x01, 0x01, 0x11, 0x0E}, // 3
+    {0x02, 0x06, 0x0A, 0x12, 0x12, 0x1F, 0x02, 0x02, 0x02}, // 4
+    {0x1F, 0x10, 0x10, 0x1E, 0x01, 0x01, 0x01, 0x11, 0x0E}, // 5
+    {0x06, 0x08, 0x10, 0x10, 0x1E, 0x11, 0x11, 0x11, 0x0E}, // 6
+    {0x1F, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08, 0x08, 0x08}, // 7
+    {0x0E, 0x11, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x11, 0x0E}, // 8
+    {0x0E, 0x11, 0x11, 0x11, 0x0F, 0x01, 0x01, 0x02, 0x0C}  // 9
+};
+
+// 3x5 数字字体 (0-9)，用于缩小后的秒数显示，每行低 3 位有效
+const uint8_t DIGITS_SMALL[10][5] = {
+    {0x07, 0x05, 0x05, 0x05, 0x07}, // 0
+    {0x02, 0x02, 0x02, 0x02, 0x02}, // 1
+    {0x07, 0x01, 0x07, 0x04, 0x07}, // 2
+    {0x07, 0x01, 0x07, 0x01, 0x07}, // 3
+    {0x05, 0x05, 0x07, 0x01, 0x01}, // 4
+    {0x07, 0x04, 0x07, 0x01, 0x07}, // 5
+    {0x07, 0x04, 0x07, 0x05, 0x07}, // 6
+    {0x07, 0x01, 0x01, 0x01, 0x01}, // 7
+    {0x07, 0x05, 0x07, 0x05, 0x07}, // 8
+    {0x07, 0x05, 0x07, 0x01, 0x07}  // 9
 };
 
 // ===========================================
 
-// 初始化 NeoPixel 对象（单引脚驱动整块 16x16 灯板）
-Adafruit_NeoPixel strip(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);
+// 灯板颜色数据（FastLED 在 show() 时通过 RMT 发送到 GPIO2）
+CRGB leds[LED_COUNT];
 
 // 创建组件对象
 BlinkerSlider SliderR("range-r"); // 红色滑块
@@ -82,9 +97,9 @@ inline int matrixToIndex(int x, int y) {
 /**
  * @brief 在矩阵指定坐标绘制像素
  */
-void drawPixel(int x, int y, uint32_t color) {
+void drawPixel(int x, int y, CRGB color) {
     if (x < 0 || x >= MATRIX_WIDTH || y < 0 || y >= MATRIX_HEIGHT) return;
-    strip.setPixelColor(matrixToIndex(x, y), color);
+    leds[matrixToIndex(x, y)] = color;
 }
 
 /**
@@ -94,12 +109,24 @@ void drawPixel(int x, int y, uint32_t color) {
  * @param digit 要显示的数字 (0-9)
  * @param color 颜色
  */
-void drawDigit(int x, int y, int digit, uint32_t color) {
+void drawDigitLarge(int x, int y, int digit, CRGB color) {
     if (digit < 0 || digit > 9) return;
-    for (int dy = 0; dy < 7; dy++) {
+    for (int dy = 0; dy < 9; dy++) {
         for (int dx = 0; dx < 5; dx++) {
             // 检查字体位图 (从高位到低位: bit 4 ~ 0)
-            if ((DIGITS[digit][dy] >> (4 - dx)) & 0x01) {
+            if ((DIGITS_LARGE[digit][dy] >> (4 - dx)) & 0x01) {
+                drawPixel(x + dx, y + dy, color);
+            }
+        }
+    }
+}
+
+void drawDigitSmall(int x, int y, int digit, CRGB color) {
+    if (digit < 0 || digit > 9) return;
+    for (int dy = 0; dy < 5; dy++) {
+        for (int dx = 0; dx < 3; dx++) {
+            // 检查字体位图 (从高位到低位: bit 2 ~ 0)
+            if ((DIGITS_SMALL[digit][dy] >> (2 - dx)) & 0x01) {
                 drawPixel(x + dx, y + dy, color);
             }
         }
@@ -110,7 +137,7 @@ void drawDigit(int x, int y, int digit, uint32_t color) {
  * @brief 清除矩阵显示（仅清缓冲区，不立即刷新）
  */
 void clearMatrix() {
-    strip.clear();
+    FastLED.clear(); // 仅清缓冲区，不立即刷新
 }
 
 /**
@@ -134,38 +161,42 @@ void showTimeOnMatrix(int minutes, int seconds) {
 
     uint8_t r, g, b;
     getActiveRGB(r, g, b);
-    uint32_t color = strip.Color(r, g, b);
+    CRGB color(r, g, b);
 
     if (minutes < 0) minutes = 0;
     if (minutes > 99) minutes = 99;
     if (seconds < 0) seconds = 0;
     if (seconds > 99) seconds = 99;
 
-    // 分钟 (上排)：两个 5x7 数字，水平居中
-    drawDigit(2, 0, minutes / 10, color);
-    drawDigit(9, 0, minutes % 10, color);
+    // 分钟 (上排)：两个 5x9 大字，占满 0~8 行
+    drawDigitLarge(2, 0, minutes / 10, color);
+    drawDigitLarge(9, 0, minutes % 10, color);
 
-    // 秒数 (下排)
-    drawDigit(2, 9, seconds / 10, color);
-    drawDigit(9, 9, seconds % 10, color);
+    // 秒数 (下排)：两个 3x5 小字，占 11~15 行
+    drawDigitSmall(3, 11, seconds / 10, color);
+    drawDigitSmall(10, 11, seconds % 10, color);
 
-    strip.show();
+    FastLED.show();
 }
 
 // ==================================================
 
 // 辅助函数：整板填充同一颜色
-void fillAll(uint32_t color) {
-    for (int i = 0; i < LED_COUNT; i++) {
-        strip.setPixelColor(i, color);
-    }
-    strip.show();
+void fillAll(CRGB color) {
+    fill_solid(leds, LED_COUNT, color);
+    FastLED.show();
 }
+
+// ================= 呼吸灯参数 =================
+#define BREATH_PERIOD_MS 4000 // 一次完整呼吸的时长
+#define BREATH_FRAME_MS 20    // 50fps，256 灯珠一帧约 7.7ms
+#define BREATH_MIN_PEAK 32    // 颜色太暗时，呼吸期间按比例抬高整体峰值，保证各通道都看得出变化
 
 // ================= 未连接蓝牙时的等待动画 =================
 // 绿色雷达波：中心呼吸点 + 从中心向外扩散的光环，提示正在等待 App 连接
 #define BLE_WAIT_ANIM_PERIOD_MS 1800 // 一轮扩散的时长
-#define BLE_WAIT_ANIM_FRAME_MS 30    // 动画帧间隔
+#define BLE_WAIT_ANIM_FRAME_MS 50    // 动画帧间隔（256 灯珠一帧约 7.7ms，留足 BLE 时间）
+#define BLE_WAIT_ANIM_LEVEL 20       // 雷达动画自身亮度 (0-255)，与滑块的全局亮度独立
 
 void showBleWaitingAnimation() {
     static unsigned long lastFrame = 0;
@@ -178,7 +209,7 @@ void showBleWaitingAnimation() {
     float radius = phase * 11.0f;
     float fade = 1.0f - phase;
 
-    strip.clear();
+    FastLED.clear();
     for (int y = 0; y < MATRIX_HEIGHT; y++) {
         for (int x = 0; x < MATRIX_WIDTH; x++) {
             float dx = x - (MATRIX_WIDTH - 1) / 2.0f;
@@ -190,21 +221,21 @@ void showBleWaitingAnimation() {
             // 中心呼吸点（2x2 像素）
             if (dist < 0.9f) {
                 float pulse = 0.35f + 0.65f * (0.5f + 0.5f * sinf(now / 300.0f));
-                g = (uint8_t)(80 + 175 * pulse);
+                g = (uint8_t)((80 + 175 * pulse) * BLE_WAIT_ANIM_LEVEL / 255);
             }
 
             // 向外扩散的光环
             float diff = fabsf(dist - radius);
             if (diff < 1.0f) {
                 float k = (1.0f - diff) * fade;
-                uint8_t ringG = (uint8_t)(255 * k);
+                uint8_t ringG = (uint8_t)(k * BLE_WAIT_ANIM_LEVEL);
                 if (ringG > g) g = ringG;
             }
 
-            if (g || b) strip.setPixelColor(matrixToIndex(x, y), strip.Color(r, g, b));
+            if (g || b) leds[matrixToIndex(x, y)] = CRGB(r, g, b);
         }
     }
-    strip.show();
+    FastLED.show();
 }
 
 /**
@@ -216,7 +247,7 @@ void updateColor() {
 
     uint8_t r, g, b;
     getActiveRGB(r, g, b);
-    fillAll(strip.Color(r, g, b));
+    fillAll(CRGB(r, g, b));
 
     BLINKER_LOG("Color Updated: R=", currentR, ", G=", currentG, ", B=", currentB);
 }
@@ -332,11 +363,11 @@ void setup() {
     Serial.begin(115200);
     BLINKER_DEBUG.stream(Serial);
 
-    // 初始化 WS2812 灯板
-    strip.begin();
-    strip.setBrightness(LED_BRIGHTNESS);
-    strip.clear();
-    strip.show();
+    // 初始化 WS2812 灯板（FastLED 的 ESP32 RMT 驱动比 Adafruit 旧驱动更稳定）
+    FastLED.addLeds<WS2812B, LED_PIN, GRB>(leds, LED_COUNT);
+    FastLED.setBrightness(LED_BRIGHTNESS);
+    FastLED.clear();
+    FastLED.show();
 
     // 初始化 Blinker
     Blinker.begin();
@@ -376,6 +407,7 @@ void loop() {
         if (millis() >= countdownEndTime) {
             currentMode = MODE_BREATHING;
             BLINKER_LOG("Time's up! Entering Breathing Mode");
+            BLINKER_LOG("Breathing RGB: R=", currentR, ", G=", currentG, ", B=", currentB);
             TextTime.print("时间到!");
             BtnStart.text("停止呼吸灯");
         } else {
@@ -391,25 +423,34 @@ void loop() {
             }
         }
     } else if (currentMode == MODE_BREATHING) {
-        // 呼吸灯特效
+        // 呼吸灯特效：余弦曲线 0→1→0，起止都没有突变
         static unsigned long last_breath_time = 0;
-        // 每 20ms 更新一次亮度，实现平滑呼吸
-        if (millis() - last_breath_time > 20) {
-            last_breath_time = millis();
+        unsigned long now = millis();
+        if (now - last_breath_time >= BREATH_FRAME_MS) {
+            last_breath_time = now;
 
-            // 使用正弦波生成呼吸因子 (0.1 ~ 1.0)
-            float breath = (exp(sin(millis() / 2000.0 * PI)) - 0.36787944) * 0.425;
-            // 加上基底亮度，避免完全熄灭 (可选)
-            if (breath < 0.1) breath = 0.1;
+            float phase = (float)(now % BREATH_PERIOD_MS) / BREATH_PERIOD_MS;
+            float breath = 0.5f - 0.5f * cosf(phase * 2.0f * PI);
 
-            // 计算当前呼吸亮度下的颜色
+            // 使用 FastLED 的 video 缩放，低亮度段过渡更细腻
             uint8_t baseR, baseG, baseB;
             getActiveRGB(baseR, baseG, baseB);
-            uint8_t r = (uint8_t)(baseR * breath);
-            uint8_t g = (uint8_t)(baseG * breath);
-            uint8_t b = (uint8_t)(baseB * breath);
 
-            fillAll(strip.Color(r, g, b));
+            // 当前颜色太暗时按比例抬高峰值，避免绿色等通道变化看不出来
+            uint8_t peak = baseR;
+            if (baseG > peak) peak = baseG;
+            if (baseB > peak) peak = baseB;
+            if (peak > 0 && peak < BREATH_MIN_PEAK) {
+                uint16_t scale = (uint16_t)BREATH_MIN_PEAK * 256u / peak;
+                baseR = (uint8_t)((baseR * scale) >> 8);
+                baseG = (uint8_t)((baseG * scale) >> 8);
+                baseB = (uint8_t)((baseB * scale) >> 8);
+            }
+
+            CRGB c(baseR, baseG, baseB);
+            c.nscale8_video((uint8_t)(breath * 255.0f + 0.5f));
+
+            fillAll(c);
         }
     }
 }
